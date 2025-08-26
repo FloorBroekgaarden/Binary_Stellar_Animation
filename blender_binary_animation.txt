@@ -1,0 +1,531 @@
+import bpy
+import csv
+import math
+from bpy import context
+
+# ---- USER CONFIG ----
+#INSERT PATH TO THE CSV FILE HERE
+csv_path = 'path'
+radius_scale = 1.0
+separation_scale = 1.0
+NUM_ORBITS = 5
+
+# ---- Stellar type to color hex mapping ----
+stellar_hex_colors = {
+    1:  "#545400", 2:  "#853E00", 3:  "#853E00", 4:  "#4D0000", 5:  "#A0522D", 6:  "#691E00",
+    7:  "#457E99", 8:  "#457E99", 9:  "#457E99", 10: "#C0C0C0", 11: "#708090", 12: "#708090",
+    13: "#005A70", 14: "#000000", 15: "#8B008B", 16: "#00CED1"
+}
+
+
+frames = []
+with open(csv_path, newline='') as csvfile:
+    reader = csv.DictReader(csvfile)
+    for row in reader:
+        frames.append({
+            'time': float(row['time']),
+            'radius1': float(row['radius1']),
+            'radius2': float(row['radius2']),
+            'a': float(row['a']),
+            'e': float(row['e']),
+            'stype1': int(row['stype1']),
+            'stype2': int(row['stype2']),
+            'm1': float(row['m1']),
+            'm2': float(row['m2']),
+            'eventString': str(row['eventString']),
+        })
+        
+        
+# ---- Utility Functions ----
+
+def set_star_state(obj_name, radius, position, frame):
+    obj = bpy.data.objects.get(obj_name)
+    if not obj:
+        print(f"Object {obj_name} not found.")
+        return
+
+    # Set location
+    obj.location = position
+    obj.keyframe_insert(data_path="location", frame=frame)
+
+    # Set radius (scale)
+    obj.scale = (radius, radius, radius)
+    obj.keyframe_insert(data_path="scale", frame=frame)
+# Create a new text object for displaying info
+
+
+# ---- Camera Setup (unchanged) ----
+if "Camera" not in bpy.data.objects:
+    cam_data = bpy.data.cameras.new("Camera")
+    cam_obj = bpy.data.objects.new("Camera", cam_data)
+    bpy.context.collection.objects.link(cam_obj)
+else:
+    cam_obj = bpy.data.objects["Camera"]
+
+# ---- Create Flat White Emission Material for Text ----
+plain_mat = bpy.data.materials.new(name="Text_Flat_White")
+plain_mat.use_nodes = True
+nodes = plain_mat.node_tree.nodes
+links = plain_mat.node_tree.links
+nodes.clear()
+
+emission = nodes.new(type='ShaderNodeEmission')
+emission.inputs['Color'].default_value = (0.329, 0.235, 0.361, 1)
+emission.inputs['Strength'].default_value = 1.0  # Low, flat emission
+emission.location = (0, 0)
+
+output = nodes.new(type='ShaderNodeOutputMaterial')
+output.location = (200, 0)
+
+links.new(emission.outputs['Emission'], output.inputs['Surface'])
+
+def create_text_object(name, location=(0, 0, 0)):
+    # Check if exists, reuse
+    txt_obj = bpy.data.objects.get(name)
+    if txt_obj:
+        return txt_obj
+
+    txt_data = bpy.data.curves.new(type="FONT", name=f"{name}_Curve")
+    txt_obj = bpy.data.objects.new(name, txt_data)
+    txt_obj.location = location
+    bpy.context.collection.objects.link(txt_obj)
+    return txt_obj
+
+def create_info_text(name, text, cam_obj, location=(0, 0, 0)):
+    txt = create_text_object(name, location=(0, 0, 0))  # Initial at origin
+
+    txt.data.body = text
+    txt.scale = (0.03, 0.03, 0.03)  # Smaller text
+    txt.data.space_line = 1.2
+    txt.data.materials.clear()
+    txt.data.materials.append(plain_mat)
+
+    # Parent to camera
+    txt.parent = cam_obj
+    txt.parent_type = 'OBJECT'  # Crucial for relative positioning
+    txt.location = (-0.6, 0.3, -1.4)  # X-left, Y-down, Z-forward
+    txt.rotation_euler = (0, 0, 0)  
+
+  
+
+    return txt
+
+
+text_objects = []
+last_stype1 = None
+last_stype2 = None
+
+   
+frame_text_data = []
+for frame_num, frame in enumerate(frames):
+    a = frame['a'] * separation_scale
+    r1 = frame['radius1'] * radius_scale
+    r2 = frame['radius2'] * radius_scale
+    info_string = (
+        f"Separation a: {a:.3f}\n"
+        f"R1: {r1:.3f}, R2: {r2:.3f}\n"
+        f"M1: {frame['m1']:.2f} M☉, M2: {frame['m2']:.2f} M☉\n"
+        f"Types: "
+        f" {frame['eventString']}"
+    )
+
+    frame_text_data.append(info_string)
+
+def update_info_text(scene):
+    frame = scene.frame_current
+    txt_obj = bpy.data.objects.get("info_text")
+    if not txt_obj or frame >= len(frame_text_data):
+        return
+
+    frame_data = frames[frame]
+    stype1 = frame_data['stype1']
+    stype2 = frame_data['stype2']
+    
+    
+
+    if stype1 == 20 and stype2 == 20:
+        # Hide the text
+        txt_obj.hide_render = True
+        txt_obj.hide_viewport = True
+        txt_obj.keyframe_insert(data_path="hide_render", frame=frame)
+        txt_obj.keyframe_insert(data_path="hide_viewport", frame=frame)
+    else:
+        # Show and update text
+        txt_obj.hide_render = False
+        txt_obj.hide_viewport = False
+        txt_obj.keyframe_insert(data_path="hide_render", frame=frame)
+        txt_obj.keyframe_insert(data_path="hide_viewport", frame=frame)
+
+        txt_obj.data.body = frame_text_data[frame]
+        
+    
+        
+
+
+def hex_to_rgba(hex_color):
+    hex_color = hex_color.lstrip('#')
+    if len(hex_color) != 6:
+        return (1, 1, 1, 1)
+    r = int(hex_color[0:2], 16) / 255
+    g = int(hex_color[2:4], 16) / 255
+    b = int(hex_color[4:6], 16) / 255
+    return (r, g, b, 1)
+
+def ensure_unique_material(obj_name, base_mat_name):
+    base_mat = bpy.data.materials.get(base_mat_name)
+    if not base_mat:
+        print(f"Base material {base_mat_name} not found.")
+        return None
+
+    mat = base_mat.copy()
+    mat.name = f"{obj_name}_Material"
+    obj = bpy.data.objects.get(obj_name)
+    if obj:
+        obj.data.materials.clear()
+        obj.data.materials.append(mat)
+    return mat
+
+def add_glow_material(mat):
+    nodes = mat.node_tree.nodes
+    links = mat.node_tree.links
+
+    # Clear all nodes
+    while nodes:
+        nodes.remove(nodes[0])
+
+    # Texture: Noise Texture node (or you can use Voronoi for sharper pattern)
+    noise = nodes.new(type='ShaderNodeTexNoise')
+    noise.location = (-800, 200)
+    noise.inputs['Scale'].default_value = 10.0
+    noise.inputs['Detail'].default_value = 5.0
+    noise.inputs['Roughness'].default_value = 0.6
+
+    # Color ramp to turn noise into darker modulator
+    ramp = nodes.new(type='ShaderNodeValToRGB')
+    ramp.location = (-600, 200)
+    ramp.color_ramp.elements[0].position = 0.3
+    ramp.color_ramp.elements[1].position = 0.8
+    ramp.color_ramp.elements[0].color = (0.2, 0.2, 0.2, 1)
+    ramp.color_ramp.elements[1].color = (1, 1, 1, 1)
+
+    # Color input (the star color you set)
+    star_color = nodes.new(type='ShaderNodeRGB')
+    star_color.location = (-400, 0)
+
+    # Multiply star color with ramp (to darken parts of it)
+    mix_color = nodes.new(type='ShaderNodeMixRGB')
+    mix_color.blend_type = 'MULTIPLY'
+    mix_color.inputs['Fac'].default_value = 1.0
+    mix_color.location = (-200, 0)
+
+    # Principled BSDF
+    principled = nodes.new(type='ShaderNodeBsdfPrincipled')
+    principled.location = (0, 0)
+
+    # Emission Shader (for glow)
+    emission = nodes.new(type='ShaderNodeEmission')
+    emission.location = (0, 200)
+    emission.inputs['Strength'].default_value = 10.0
+
+    # Mix Shader to blend emission + surface
+    mix_shader = nodes.new(type='ShaderNodeMixShader')
+    mix_shader.location = (200, 100)
+    mix_shader.inputs['Fac'].default_value = 0.4
+
+    # Material Output
+    output_node = nodes.new(type='ShaderNodeOutputMaterial')
+    output_node.location = (400, 100)
+
+    # === Link nodes ===
+    links.new(noise.outputs['Fac'], ramp.inputs['Fac'])
+    links.new(ramp.outputs['Color'], mix_color.inputs[1])
+    links.new(star_color.outputs['Color'], mix_color.inputs[2])
+    links.new(mix_color.outputs['Color'], principled.inputs['Base Color'])
+    emission.inputs['Color'].default_value = (1.0, 1.0, 1.0, 1.0)
+    links.new(principled.outputs['BSDF'], mix_shader.inputs[1])
+    links.new(emission.outputs['Emission'], mix_shader.inputs[2])
+    links.new(mix_shader.outputs['Shader'], output_node.inputs['Surface'])
+
+    # === Store node names for animation ===
+    mat['principled_node_name'] = principled.name
+    mat['emission_node_name'] = emission.name
+    mat['color_node_name'] = star_color.name
+
+
+
+def set_star_color(obj_name, stype, frame):
+    obj = bpy.data.objects.get(obj_name)
+    if obj is None:
+        print(f"Object '{obj_name}' not found.")
+        return
+
+    mat = obj.active_material
+    if mat is None or not mat.use_nodes:
+        print(f"{obj_name} has no active material or material doesn't use nodes.")
+        return
+
+    color_hex = stellar_hex_colors.get(stype, "#FFFFFF")
+    color = hex_to_rgba(color_hex)
+
+    principled_name = mat.get('principled_node_name')
+    emission_name = mat.get('emission_node_name')
+
+    if not principled_name or not emission_name:
+        print(f"Material nodes not properly set in {mat.name}")
+        return
+
+    principled_node = mat.node_tree.nodes.get(principled_name)
+    emission_node = mat.node_tree.nodes.get(emission_name)
+
+    if not principled_node or not emission_node:
+        print(f"Nodes not found in material {mat.name}")
+        return
+
+    # Set Principled BSDF Base Color (vivid star surface color)
+    principled_node.inputs['Base Color'].default_value = color
+
+    # Set Emission Color (glow)
+    emission_node.inputs['Color'].default_value = color
+    emission_node.inputs['Color'].keyframe_insert('default_value', frame=frame)
+    
+    color_node_name = mat.get('color_node_name')
+    color_node = mat.node_tree.nodes.get(color_node_name)
+    if color_node:
+        color_node.outputs[0].default_value = color
+        color_node.outputs[0].keyframe_insert('default_value', frame=frame)
+
+import mathutils
+
+def setup_camera_for_binary_system(cam_obj, orbit_radius, target=(0, 0, 0), fov=50):
+    """
+    Places the camera far enough to see both stars orbiting, aimed at the origin.
+    """
+    from mathutils import Vector
+
+    distance = orbit_radius * 3  # or tweak to 2.5, 4, etc.
+    height = orbit_radius * 1.5
+
+    cam_location = Vector((0, -distance, height))
+    cam_obj.location = cam_location
+
+    # Look at target (usually 0,0,0)
+    direction = Vector(target) - cam_location
+    rot_quat = direction.to_track_quat('-Z', 'Y')
+    cam_obj.rotation_euler = rot_quat.to_euler()
+
+    # Optional: set camera lens FOV (in degrees)
+    cam_obj.data.angle = math.radians(fov)
+    
+import mathutils
+
+def update_camera_position(frame_num, total_frames, a, r1, r2, cam_obj):
+    # Safety scale factor for framing comfortably
+    safety_factor = 3
+
+    # Calculate required radius to encompass stars + orbit radius
+    required_radius = safety_factor * (a/2 + r1 + r2)
+
+    # Define near and far limits for camera movement on Y axis
+    near_y = -required_radius * 0.8
+    far_y = -required_radius * 1.5
+
+    # Make camera move back and forth smoothly with frame (using sine)
+    # Normalize frame to [0, 2pi]
+    t = (frame_num / total_frames) * 2 * math.pi
+    y_pos = (near_y + far_y)/2 + (far_y - near_y)/2 * math.sin(t)
+
+    # Camera height proportional to required radius
+    height = required_radius * 0.7
+
+    cam_obj.location = mathutils.Vector((0, y_pos, height))
+
+    # Make camera look at the origin (0,0,0)
+    direction = mathutils.Vector((0, 0, 0)) - cam_obj.location
+    rot_quat = direction.to_track_quat('-Z', 'Y')
+    cam_obj.rotation_euler = rot_quat.to_euler()
+
+    # Optionally adjust FOV based on required radius if needed
+    # cam_obj.data.angle = math.radians(50)  # Or vary here
+
+    # Insert keyframes for smooth animation
+    cam_obj.keyframe_insert(data_path="location", frame=frame_num)
+    cam_obj.keyframe_insert(data_path="rotation_euler", frame=frame_num)
+
+
+
+def create_volume_stream():
+    if "MassStreamVolume" in bpy.data.objects:
+        return bpy.data.objects["MassStreamVolume"]
+
+    bpy.ops.mesh.primitive_cube_add(size=1)
+    obj = bpy.context.active_object
+    obj.name = "MassStreamVolume"
+    obj.scale = (0.1, 0.1, 0.5)  # Initial thin shape
+
+    # Add volumetric material
+    mat = bpy.data.materials.new(name="VolumeStreamMaterial")
+    mat.use_nodes = True
+    mat.blend_method = 'BLEND'
+    mat.shadow_method = 'NONE'
+    nodes = mat.node_tree.nodes
+    links = mat.node_tree.links
+    nodes.clear()
+
+    # --- Nodes ---
+    # Principled Volume
+    principled_vol = nodes.new(type='ShaderNodeVolumePrincipled')
+    principled_vol.location = (0, 0)
+    principled_vol.inputs['Emission Color'].default_value = (1.0, 1.0, 0.5, 1)
+    principled_vol.inputs['Emission Strength'].default_value = 5.0
+    principled_vol.inputs['Density'].default_value = 0.3
+    principled_vol.inputs['Anisotropy'].default_value = 0.4  # Directional scattering
+
+    # Texture Coordinates
+    tex_coord = nodes.new(type='ShaderNodeTexCoord')
+    tex_coord.location = (-800, -200)
+
+    # Noise Texture
+    noise = nodes.new(type='ShaderNodeTexNoise')
+    noise.location = (-600, 0)
+    noise.inputs['Scale'].default_value = 4.0
+    noise.inputs['Detail'].default_value = 2.0
+    noise.inputs['Roughness'].default_value = 0.7
+
+    # ColorRamp to control density
+    ramp = nodes.new(type='ShaderNodeValToRGB')
+    ramp.location = (-400, 0)
+    ramp.color_ramp.elements[0].position = 0.3
+    ramp.color_ramp.elements[1].position = 0.7
+    ramp.color_ramp.elements[0].color = (0, 0, 0, 1)
+    ramp.color_ramp.elements[1].color = (1, 1, 1, 1)
+
+    # Output
+    mat_output = nodes.new(type='ShaderNodeOutputMaterial')
+    mat_output.location = (200, 0)
+
+    # --- Links ---
+    links.new(tex_coord.outputs['Object'], noise.inputs['Vector'])
+    links.new(noise.outputs['Fac'], ramp.inputs['Fac'])
+    links.new(ramp.outputs['Color'], principled_vol.inputs['Density'])
+    links.new(principled_vol.outputs['Volume'], mat_output.inputs['Volume'])
+
+    obj.data.materials.append(mat)
+    return obj
+
+
+
+# ---- Load CSV into raw_frames (no interpolation) ----
+
+
+# ---- Material Setup ----
+mat1 = ensure_unique_material("Star1", "Material.001")
+mat2 = ensure_unique_material("Star2", "Material.002")
+if mat1: add_glow_material(mat1)
+if mat2: add_glow_material(mat2)
+
+def fix_node_names(mat):
+    principled = None
+    emission = None
+    color_node = None
+    for node in mat.node_tree.nodes:
+        print(f"Node: {node.name}, type: {node.type}")
+        if node.type == 'BSDF_PRINCIPLED':
+            principled = node
+        elif node.type == 'EMISSION':
+            emission = node
+        elif node.type == 'RGB':
+            color_node = node
+
+    if principled:
+        mat['principled_node_name'] = principled.name
+    if emission:
+        mat['emission_node_name'] = emission.name
+    if color_node:
+        mat['color_node_name'] = color_node.name
+
+if mat1:
+    fix_node_names(mat1)
+if mat2:
+    fix_node_names(mat2)
+
+
+
+# ---- Animate Scene ----
+bpy.context.scene.frame_start = 0
+bpy.context.scene.frame_end = len(frames) - 1
+
+last_stype1 = None
+last_stype2 = None
+
+info_text = create_info_text(
+    name="info_text",
+    text="Initializing...",
+    cam_obj=cam_obj,
+    location=(0.0, 0, 0)
+
+)
+
+
+for frame_num, frame in enumerate(frames):
+    bpy.context.scene.frame_set(frame_num)
+
+    a = frame['a'] * separation_scale
+    r1 = frame['radius1'] * radius_scale
+    r2 = frame['radius2'] * radius_scale
+    angle = 2 * math.pi * frame_num * NUM_ORBITS / len(frames)
+
+    x1 = -(a / 2) * math.cos(angle)
+    y1 = -(a / 2) * math.sin(angle)
+    x2 = +(a / 2) * math.cos(angle)
+    y2 = +(a / 2) * math.sin(angle)
+
+    set_star_state("Star1", r1, (x1, y1, 0), frame_num)
+    set_star_state("Star2", r2, (x2, y2, 0), frame_num)
+    set_star_color("Star1", frame['stype1'], frame_num)
+    set_star_color("Star2", frame['stype2'], frame_num)
+    
+    update_camera_position(frame_num, len(frames), a, r1, r2, cam_obj)
+
+
+
+
+
+# Attach the handler
+bpy.app.handlers.frame_change_pre.clear()
+bpy.app.handlers.frame_change_pre.append(update_info_text)
+
+scene = bpy.context.scene
+scene.use_nodes = True
+tree = scene.node_tree
+nodes = tree.nodes
+links = tree.links
+
+for node in nodes:
+    nodes.remove(node)
+
+render_layers = nodes.new(type='CompositorNodeRLayers')
+render_layers.location = (0, 0)
+
+glare_node = nodes.new(type='CompositorNodeGlare')
+glare_node.location = (300, 0)
+glare_node.glare_type = 'BLOOM'
+glare_node.quality = 'HIGH'
+glare_node.threshold = 0.5
+glare_node.size = 5
+glare_node.threshold = 0.05  # lower threshold for more bloom
+glare_node.size = 10          # larger bloom radius
+glare_node.mix = 0.7         # optionally increase bloom intensity
+
+
+composite = nodes.new(type='CompositorNodeComposite')
+composite.location = (600, 0)
+
+viewer = nodes.new(type='CompositorNodeViewer')
+viewer.location = (600, -200)
+
+links.new(render_layers.outputs['Image'], glare_node.inputs['Image'])
+links.new(glare_node.outputs['Image'], composite.inputs['Image'])
+links.new(glare_node.outputs['Image'], viewer.inputs['Image'])
+
+# Use final value of a as orbital radius
+setup_camera_for_binary_system(cam_obj, orbit_radius=a)
